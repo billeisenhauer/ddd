@@ -6,22 +6,28 @@ module DDD
 
       attr_writer :container
 
-      def register(domain_event_class, &callback)
-        add_callback_for(domain_event_class, &callback)
+      def register(*events, &callback)
+        events.each { |e| add_callback_for(e, &callback) }
       end
 
       def clear_callbacks
         all_callbacks.clear
       end
 
-      def raise(domain_event)
-        handle_with_handlers_for(domain_event) if container
-        call_callbacks_for(domain_event)
+      def raise(*events)
+        events.each do |e|
+          handle_with_handlers_for(e) if container
+          call_callbacks_for(e)
+        end
       end
 
       private
 
-        attr_reader :container
+        attr_reader :container, :key_generator
+
+        def key_generator
+          @key_generator ||= DomainEventKeyGenerator.new
+        end
 
         def all_callbacks
           Thread.current[all_callbacks_key] ||= {}
@@ -31,32 +37,42 @@ module DDD
           self.name.gsub("::", "_").downcase
         end
 
-        def callbacks_for(domain_event_class)
-          key = callback_key_for(domain_event_class)
-          all_callbacks.fetch(key, [])
+        def add_callback_for(event, &callback)
+          event_key = key_generator.key_from(event)
+          callbacks = all_callbacks.fetch(event_key, [])
+          all_callbacks[event_key] = callbacks.push(callback)
         end
 
-        def add_callback_for(domain_event_class, &callback)
-          key = callback_key_for(domain_event_class)
-          callbacks = all_callbacks.fetch(key, [])
-          all_callbacks[key] = callbacks.push(callback)
+        def callbacks_for(event)
+          event_key = key_generator.key_from(event)
+          all_callbacks.inject([]) do |matching_cbs, (cb_key, cbs)|
+            cb_key == event_key ? matching_cbs.push(*cbs) : matching_cbs
+          end
         end
 
-        def callback_key_for(domain_event_event)
-          domain_event_event.name.downcase
+        def call_callbacks_for(event)
+          callbacks_for(event).each do |callback|
+            callback.call(event)
+          end
         end
 
-        def handle_with_handlers_for(domain_event)
+        def handle_with_handlers_for(event)
           container.resolve_all.each do |handler|
-            handler.handle(domain_event)
+            handler.handle(event)
           end
         end
 
-        def call_callbacks_for(domain_event)
-          callbacks_for(domain_event.class).each do |callback|
-            callback.call(domain_event)
-          end
-        end
+    end
+
+    class DomainEventKeyGenerator
+
+      def key_from(event)
+        unless [String, Symbol, Class].include?(event.class)
+          event.class
+        else
+          event
+        end.to_s
+      end
 
     end
 
